@@ -46,23 +46,15 @@ def inject_css() -> None:
   max-width: 1080px;
   margin: 0 auto;
 }
-.hero {
-  background: linear-gradient(135deg, rgba(79,70,229,0.12) 0%, rgba(124,58,237,0.16) 60%, rgba(59,130,246,0.12) 100%);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 1.8rem 2rem;
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
-  margin-bottom: 1.2rem;
-  text-align: center;
-}
-.hero-title {
-  font-size: 1.8rem;
-  font-weight: 800;
-  color: var(--text);
-}
-.hero-sub {
-  margin-top: 0.35rem;
-  color: var(--muted);
+/* Hide empty containers that might appear at top */
+.block-container > div:first-child:empty,
+div[data-testid]:empty,
+div:has(background: linear-gradient):empty {
+  display: none !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  visibility: hidden !important;
 }
 .section-title {
   margin-top: 1.5rem;
@@ -684,6 +676,10 @@ def show_rules_modal() -> bool:
     # Show rules in an expandable section with prominent styling
     st.markdown("""
     <style>
+    /* Hide any empty containers at the top */
+    .block-container > div:first-child:empty {
+        display: none !important;
+    }
     .rules-container {
         background: linear-gradient(135deg, rgba(79,70,229,0.1) 0%, rgba(124,58,237,0.1) 100%);
         border: 2px solid #4f46e5;
@@ -691,6 +687,21 @@ def show_rules_modal() -> bool:
         padding: 2rem;
         margin: 1rem 0;
         box-shadow: 0 12px 32px rgba(79, 70, 229, 0.15);
+    }
+    .contest-title {
+        font-size: 2.2rem;
+        font-weight: 900;
+        color: #4f46e5;
+        text-align: center;
+        margin-bottom: 0.5rem;
+    }
+    .contest-subtitle {
+        font-size: 1.2rem;
+        color: #475569;
+        text-align: center;
+        margin-bottom: 1.5rem;
+        padding-bottom: 1rem;
+        border-bottom: 2px solid #e5e7eb;
     }
     .rules-title {
         font-size: 2rem;
@@ -727,11 +738,14 @@ def show_rules_modal() -> bool:
     </style>
     """, unsafe_allow_html=True)
     
-    # Show rules prominently
-    st.markdown('<div class="rules-container">', unsafe_allow_html=True)
-    st.markdown('<div class="rules-title">📋 Rules for Departmental Photo Competition</div>', unsafe_allow_html=True)
-    
+    # Show rules prominently - all in one HTML block to avoid empty containers
     st.markdown("""
+    <div class="rules-container">
+    <div class="contest-title">Income Tax Photography League</div>
+    <div class="contest-subtitle">In-House Photo Contest</div>
+    
+    <div class="rules-title">📋 Rules for Departmental Photo Competition</div>
+    
     <div class="rules-list">
     <ol>
     <li>The competition is open to entire <strong>AAYKAR KUTUMB</strong>.</li>
@@ -770,15 +784,12 @@ def show_rules_modal() -> bool:
     • The decision of HQ Coordination shall be final and binding on all participants.</li>
     </ol>
     </div>
-    """, unsafe_allow_html=True)
     
-    st.markdown("""
     <div class="warning-box">
     <strong>⚠️ Important:</strong> Please read all rules carefully before proceeding. By continuing, you acknowledge that you have read, understood, and agree to comply with all the rules and conditions stated above.
     </div>
+    </div>
     """, unsafe_allow_html=True)
-    
-    st.markdown('</div>', unsafe_allow_html=True)
     
     st.divider()
     
@@ -805,16 +816,6 @@ def main() -> None:
     # Show rules modal first - must acknowledge before proceeding
     if not show_rules_modal():
         return  # Stop execution until rules are acknowledged
-    
-    st.markdown(
-        """
-<div class="hero">
-  <div class="hero-title">In-House Photo Contest</div>
-  <div class="hero-sub">Temporary offline system for 2–3 days. Local-only, no cloud.</div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
 
     ensure_structure()
 
