@@ -130,7 +130,7 @@ def ensure_structure() -> None:
         pd.DataFrame(columns=["photo_id", "user_id", "rating"]).to_csv(RATINGS_CSV, index=False)
     
     if not os.path.exists(USERS_CSV):
-        pd.DataFrame(columns=["username", "password_hash", "name", "employee_id", "designation"]).to_csv(
+        pd.DataFrame(columns=["employee_id", "name", "posting_details", "is_admin"]).to_csv(
             USERS_CSV, index=False
         )
     
@@ -165,60 +165,88 @@ def load_users() -> pd.DataFrame:
     try:
         return pd.read_csv(USERS_CSV)
     except pd.errors.EmptyDataError:
-        return pd.DataFrame(columns=["username", "password_hash", "name", "employee_id", "designation"])
+        return pd.DataFrame(columns=["employee_id", "name", "posting_details", "is_admin"])
 
 
-def save_user(username: str, password: str, name: str, employee_id: str, designation: str) -> bool:
-    """Register a new user. Returns True if successful, False if username already exists."""
+def login_or_create_user(employee_id: str, name: str, posting_details: str) -> tuple[bool, dict]:
+    """Login or auto-create user. Returns (success, user_info_dict)."""
     users_df = load_users()
+    employee_id = employee_id.strip().upper()
+    name = name.strip()
+    posting_details = posting_details.strip()
     
-    # Check if username already exists
-    if not users_df.empty and username.lower() in users_df["username"].str.lower().values:
-        return False
+    # Check if user exists
+    if not users_df.empty:
+        user = users_df[users_df["employee_id"].str.upper() == employee_id]
+        if not user.empty:
+            # User exists, update info if changed
+            user_info = user.iloc[0].to_dict()
+            user_info["name"] = name
+            user_info["posting_details"] = posting_details
+            # Update in dataframe
+            users_df.loc[users_df["employee_id"].str.upper() == employee_id, "name"] = name
+            users_df.loc[users_df["employee_id"].str.upper() == employee_id, "posting_details"] = posting_details
+            users_df.to_csv(USERS_CSV, index=False)
+            return True, user_info
     
-    # Create new user
-    password_hash = hash_password(password)
+    # User doesn't exist, create new user
     new_user = {
-        "username": username.strip(),
-        "password_hash": password_hash,
-        "name": name.strip(),
-        "employee_id": employee_id.strip(),
-        "designation": designation.strip()
+        "employee_id": employee_id,
+        "name": name,
+        "posting_details": posting_details,
+        "is_admin": False
     }
     
     users_df = pd.concat([users_df, pd.DataFrame([new_user])], ignore_index=True)
     users_df.to_csv(USERS_CSV, index=False)
-    return True
+    return True, new_user
 
 
-def authenticate_user(username: str, password: str) -> tuple[bool, dict]:
-    """Authenticate a user. Returns (success, user_info_dict)."""
+def authenticate_admin(username: str, password: str) -> tuple[bool, dict]:
+    """Authenticate admin user. Returns (success, user_info_dict)."""
     users_df = load_users()
     
-    if users_df.empty:
-        return False, {}
+    # Check if admin user exists, if not create it
+    admin_user = users_df[users_df["employee_id"].str.upper() == ADMIN_USERNAME.upper()]
     
-    password_hash = hash_password(password)
-    user = users_df[
-        (users_df["username"].str.lower() == username.lower()) &
-        (users_df["password_hash"] == password_hash)
-    ]
+    if admin_user.empty:
+        # Create admin user if doesn't exist
+        new_admin = {
+            "employee_id": ADMIN_USERNAME.upper(),
+            "name": "Admin User",
+            "posting_details": "Administrator",
+            "is_admin": True
+        }
+        users_df = pd.concat([users_df, pd.DataFrame([new_admin])], ignore_index=True)
+        users_df.to_csv(USERS_CSV, index=False)
+        return True, new_admin
     
-    if user.empty:
-        return False, {}
+    admin_info = admin_user.iloc[0].to_dict()
     
-    return True, user.iloc[0].to_dict()
+    # Simple admin authentication - username must match ADMIN_USERNAME
+    # Password check can be enhanced later if needed
+    if username.upper() == ADMIN_USERNAME.upper():
+        admin_info["is_admin"] = True
+        return True, admin_info
+    
+    return False, {}
 
 
-def get_user_photo_count(username: str) -> int:
+def get_user_photo_count(employee_id: str) -> int:
     """Get the number of photos uploaded by a user."""
     photos_df, _ = load_data()
-    if photos_df.empty:
+    if photos_df.empty or "uploader" not in photos_df.columns:
         return 0
-    return len(photos_df[photos_df["uploader"].str.lower() == username.lower()])
+    
+    # Convert uploader column to string and handle NaN values
+    photos_df["uploader"] = photos_df["uploader"].astype(str)
+    # Filter out 'nan' strings
+    photos_df = photos_df[photos_df["uploader"] != "nan"]
+    
+    return len(photos_df[photos_df["uploader"].str.upper() == employee_id.upper()])
 
 
-def save_photo(file, title: str, username: str) -> None:
+def save_photo(file, title: str, employee_id: str) -> None:
     """Persist uploaded photo and metadata."""
     ext = os.path.splitext(file.name)[1].lower()
     photo_id = str(uuid.uuid4())
@@ -233,7 +261,7 @@ def save_photo(file, title: str, username: str) -> None:
         "photo_id": photo_id,
         "title": title.strip(),
         "filename": filename,
-        "uploader": username.strip(),
+        "uploader": employee_id.strip().upper(),
         "uploaded_at": datetime.utcnow().isoformat(),
     }
     photos_df = pd.concat([photos_df, pd.DataFrame([new_row])], ignore_index=True)
@@ -350,7 +378,7 @@ def compute_leaderboard(show_uploader: bool = False) -> pd.DataFrame:
 
 
 def require_user() -> dict:
-    """Handle user authentication (login/register) and return user info dict."""
+    """Handle user authentication (simplified login) and return user info dict."""
     if "authenticated_user" not in st.session_state:
         st.session_state.authenticated_user = {}
     
@@ -358,54 +386,55 @@ def require_user() -> dict:
     if st.session_state.authenticated_user:
         return st.session_state.authenticated_user
     
-    # Show login/register tabs
-    tab1, tab2 = st.sidebar.tabs(["Login", "Register"])
+    # Show login/admin tabs
+    tab1, tab2 = st.sidebar.tabs(["Login", "Admin Login"])
     
     with tab1:
         st.sidebar.header("Login")
-        login_username = st.sidebar.text_input("Username", key="login_username")
-        login_password = st.sidebar.text_input("Password", type="password", key="login_password")
+        login_name = st.sidebar.text_input("Name", key="login_name")
+        login_employee_id = st.sidebar.text_input("Employee ID", key="login_employee_id")
+        login_posting = st.sidebar.text_input("Posting Details", key="login_posting")
         
         if st.sidebar.button("Login", key="login_btn"):
-            if login_username and login_password:
-                success, user_info = authenticate_user(login_username, login_password)
+            if login_name and login_employee_id and login_posting:
+                success, user_info = login_or_create_user(login_employee_id, login_name, login_posting)
                 if success:
                     st.session_state.authenticated_user = user_info
                     st.sidebar.success(f"Welcome, {user_info['name']}!")
                     st.rerun()
                 else:
-                    st.sidebar.error("Invalid username or password.")
-            else:
-                st.sidebar.warning("Please enter both username and password.")
-    
-    with tab2:
-        st.sidebar.header("Register")
-        reg_username = st.sidebar.text_input("Username", key="reg_username")
-        reg_password = st.sidebar.text_input("Password", type="password", key="reg_password")
-        reg_name = st.sidebar.text_input("Full Name", key="reg_name")
-        reg_employee_id = st.sidebar.text_input("Employee ID", key="reg_employee_id")
-        reg_designation = st.sidebar.text_input("Designation", key="reg_designation")
-        
-        if st.sidebar.button("Register", key="register_btn"):
-            if all([reg_username, reg_password, reg_name, reg_employee_id, reg_designation]):
-                if save_user(reg_username, reg_password, reg_name, reg_employee_id, reg_designation):
-                    st.sidebar.success("Registration successful! Please login.")
-                else:
-                    st.sidebar.error("Username already exists. Please choose a different username.")
+                    st.sidebar.error("Login failed. Please try again.")
             else:
                 st.sidebar.warning("Please fill all fields.")
+    
+    with tab2:
+        st.sidebar.header("Admin Login")
+        admin_username = st.sidebar.text_input("Admin Username", key="admin_username")
+        admin_password = st.sidebar.text_input("Admin Password", type="password", key="admin_password")
+        
+        if st.sidebar.button("Admin Login", key="admin_login_btn"):
+            if admin_username and admin_password:
+                success, user_info = authenticate_admin(admin_username, admin_password)
+                if success:
+                    st.session_state.authenticated_user = user_info
+                    st.sidebar.success(f"Welcome, Admin!")
+                    st.rerun()
+                else:
+                    st.sidebar.error("Invalid admin credentials.")
+            else:
+                st.sidebar.warning("Please enter admin username and password.")
     
     return {}
 
 
-def phase_toggle(username: str) -> bool:
+def phase_toggle(employee_id: str) -> bool:
     """Display phase toggle in sidebar and return current state. Only admin can toggle."""
     st.sidebar.divider()
     st.sidebar.header("Contest Control")
     
     current_phase = get_voting_phase()
     voting_ended = get_voting_ended()
-    is_admin = username.lower() == ADMIN_USERNAME.lower()
+    is_admin = employee_id.upper() == ADMIN_USERNAME.upper() if employee_id else False
     
     if voting_ended:
         phase_label = "Voting Ended - Results Available"
@@ -434,7 +463,7 @@ def phase_toggle(username: str) -> bool:
     return current_phase
 
 
-def end_voting_button(username: str) -> None:
+def end_voting_button(employee_id: str) -> None:
     """Display 'End Voting' button only for admin user."""
     voting_phase = get_voting_phase()
     voting_ended = get_voting_ended()
@@ -445,7 +474,7 @@ def end_voting_button(username: str) -> None:
         st.sidebar.header("Admin Controls")
         
         # Check if user is admin
-        is_admin = username.lower() == ADMIN_USERNAME.lower()
+        is_admin = employee_id.upper() == ADMIN_USERNAME.upper()
         
         if is_admin:
             if st.sidebar.button("🏁 End Voting", type="primary", use_container_width=True):
@@ -456,10 +485,10 @@ def end_voting_button(username: str) -> None:
             st.sidebar.info(f"⚠️ Admin access required. Login as '{ADMIN_USERNAME}' to end voting.")
 
 
-def reset_contest_button(username: str) -> None:
+def reset_contest_button(employee_id: str) -> None:
     """Display 'Reset Contest' button for admin to reset back to Upload Phase (for testing)."""
     voting_ended = get_voting_ended()
-    is_admin = username.lower() == ADMIN_USERNAME.lower()
+    is_admin = employee_id.upper() == ADMIN_USERNAME.upper()
     
     # Only show reset button if voting has ended and user is admin
     if voting_ended and is_admin:
@@ -474,12 +503,12 @@ def reset_contest_button(username: str) -> None:
             st.rerun()
 
 
-def upload_section(username: str) -> None:
+def upload_section(employee_id: str) -> None:
     """Upload section - only shown during Upload Phase."""
     st.markdown('<div class="section-title">Upload a Photo</div>', unsafe_allow_html=True)
     
     # Check photo count
-    photo_count = get_user_photo_count(username)
+    photo_count = get_user_photo_count(employee_id)
     remaining = MAX_PHOTOS_PER_USER - photo_count
     
     if remaining <= 0:
@@ -490,13 +519,13 @@ def upload_section(username: str) -> None:
     st.markdown(f'<div class="section-note">JPG or PNG, title required. You can upload {remaining} more photo(s). ({photo_count}/{MAX_PHOTOS_PER_USER} uploaded)</div>', unsafe_allow_html=True)
     
     # Use user-specific keys to prevent cross-user state persistence
-    title_key = f"title_input_{username}"
-    uploader_key = f"file_uploader_{username}"
+    title_key = f"title_input_{employee_id}"
+    uploader_key = f"file_uploader_{employee_id}"
     
     title = st.text_input("Photo Title", key=title_key)
     uploaded_file = st.file_uploader("Select a JPG or PNG image", type=["jpg", "jpeg", "png"], key=uploader_key)
 
-    if st.button("Upload", key=f"upload_btn_{username}"):
+    if st.button("Upload", key=f"upload_btn_{employee_id}"):
         if not title.strip():
             st.warning("Title is required.")
             return
@@ -505,12 +534,12 @@ def upload_section(username: str) -> None:
             return
         
         # Double-check photo count before uploading
-        current_count = get_user_photo_count(username)
+        current_count = get_user_photo_count(employee_id)
         if current_count >= MAX_PHOTOS_PER_USER:
             st.error(f"You have reached the maximum upload limit of {MAX_PHOTOS_PER_USER} photos.")
             return
         
-        save_photo(uploaded_file, title, username)
+        save_photo(uploaded_file, title, employee_id)
         st.success(f"Photo '{title.strip()}' uploaded successfully!")
         # Clear the form after successful upload
         if title_key in st.session_state:
@@ -520,10 +549,10 @@ def upload_section(username: str) -> None:
         st.rerun()
 
 
-def gallery_section(username: str = "") -> None:
+def gallery_section(employee_id: str = "") -> None:
     """Show gallery of uploaded photos (without uploader names) during Upload Phase."""
     photos_df, _ = load_data()
-    is_admin = username.lower() == ADMIN_USERNAME.lower() if username else False
+    is_admin = employee_id.upper() == ADMIN_USERNAME.upper() if employee_id else False
     
     if photos_df.empty:
         st.info("No photos uploaded yet.")
@@ -565,11 +594,11 @@ def gallery_section(username: str = "") -> None:
                 st.markdown("</div>", unsafe_allow_html=True)
 
 
-def rating_section(username: str) -> None:
+def rating_section(employee_id: str) -> None:
     """Voting section - only shown during Voting Phase, with anonymity."""
     st.markdown('<div class="section-title">Vote for Photos</div>', unsafe_allow_html=True)
     photos_df, ratings_df = load_data()
-    is_admin = username.lower() == ADMIN_USERNAME.lower()
+    is_admin = employee_id.upper() == ADMIN_USERNAME.upper()
 
     if photos_df.empty:
         st.info("No photos available for voting.")
@@ -587,7 +616,7 @@ def rating_section(username: str) -> None:
         )
 
     # Determine current vote for this user (if any)
-    user_vote = ratings_df[ratings_df["user_id"] == username]
+    user_vote = ratings_df[ratings_df["user_id"] == employee_id]
     current_photo_id = user_vote["photo_id"].iloc[0] if not user_vote.empty else None
 
     # Display in a simple grid (3 columns per row)
@@ -616,7 +645,7 @@ def rating_section(username: str) -> None:
                 disabled = is_current
 
                 if st.button(button_label, key=f"vote-{photo_id}", use_container_width=True, disabled=disabled):
-                    save_rating(photo_id, username, 1)
+                    save_rating(photo_id, employee_id, 1)
                     st.success("Vote recorded." if not current_photo_id else "Vote moved.")
                     st.rerun()
 
@@ -643,9 +672,140 @@ def leaderboard_section(show_uploader: bool = False) -> None:
     st.dataframe(lb, hide_index=True, use_container_width=True)
 
 
+def show_rules_modal() -> bool:
+    """Display contest rules modal. Returns True if user has acknowledged."""
+    if "rules_acknowledged" not in st.session_state:
+        st.session_state.rules_acknowledged = False
+    
+    # If already acknowledged, return True
+    if st.session_state.rules_acknowledged:
+        return True
+    
+    # Show rules in an expandable section with prominent styling
+    st.markdown("""
+    <style>
+    .rules-container {
+        background: linear-gradient(135deg, rgba(79,70,229,0.1) 0%, rgba(124,58,237,0.1) 100%);
+        border: 2px solid #4f46e5;
+        border-radius: 20px;
+        padding: 2rem;
+        margin: 1rem 0;
+        box-shadow: 0 12px 32px rgba(79, 70, 229, 0.15);
+    }
+    .rules-title {
+        font-size: 2rem;
+        font-weight: 800;
+        color: #0f172a;
+        margin-bottom: 1.5rem;
+        text-align: center;
+        border-bottom: 3px solid #4f46e5;
+        padding-bottom: 1rem;
+    }
+    .rules-list {
+        margin: 1.5rem 0;
+        font-size: 1rem;
+    }
+    .rules-list ol {
+        padding-left: 1.5rem;
+    }
+    .rules-list li {
+        margin: 1rem 0;
+        line-height: 1.8;
+        color: #0f172a;
+    }
+    .rules-list strong {
+        color: #4f46e5;
+        font-size: 1.05rem;
+    }
+    .warning-box {
+        background: #fef3c7;
+        border-left: 4px solid #f59e0b;
+        padding: 1rem;
+        margin: 1.5rem 0;
+        border-radius: 8px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Show rules prominently
+    st.markdown('<div class="rules-container">', unsafe_allow_html=True)
+    st.markdown('<div class="rules-title">📋 Rules for Departmental Photo Competition</div>', unsafe_allow_html=True)
+    
+    st.markdown("""
+    <div class="rules-list">
+    <ol>
+    <li>The competition is open to entire <strong>AAYKAR KUTUMB</strong>.</li>
+    
+    <li><strong>Theme:</strong><br>
+    Each participant may submit photographs under the following themes:<br>
+    &nbsp;&nbsp;&nbsp;i. "Happy Department is an Efficient Department"<br>
+    &nbsp;&nbsp;&nbsp;ii. "New Income Tax Act"</li>
+    
+    <li><strong>Number of Entries:</strong><br>
+    A maximum of two (2) photographs per participant is permitted (one per theme).</li>
+    
+    <li><strong>Photo Quality:</strong><br>
+    • Photographs must be clear, sharp, and of good visual quality.<br>
+    • Blurred, pixelated, or poorly lit photographs will not be considered.</li>
+    
+    <li><strong>Watermark Requirement:</strong><br>
+    • Each photograph must carry the original watermark of the device (mobile phone/camera) from which it has been taken.<br>
+    • Edited or removed watermarks will lead to disqualification.</li>
+    
+    <li><strong>Originality:</strong><br>
+    • Photographs must be original and taken by the participant.<br>
+    • Use of stock images or images taken from other sources is strictly prohibited.</li>
+    
+    <li><strong>Editing:</strong><br>
+    • Minor adjustments (cropping, brightness, contrast) are permitted.<br>
+    • Heavy editing, filters, or digital manipulation are not allowed.</li>
+    
+    <li><strong>Submission:</strong><br>
+    • Photographs must be submitted in the prescribed manner and within the stipulated timeline, as communicated separately.</li>
+    
+    <li><strong>Disqualification:</strong><br>
+    • Non-compliance with any of the above rules will result in disqualification.</li>
+    
+    <li><strong>Decision of Jury:</strong><br>
+    • The decision of HQ Coordination shall be final and binding on all participants.</li>
+    </ol>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("""
+    <div class="warning-box">
+    <strong>⚠️ Important:</strong> Please read all rules carefully before proceeding. By continuing, you acknowledge that you have read, understood, and agree to comply with all the rules and conditions stated above.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # Acknowledgment checkbox
+    agreed = st.checkbox("✅ **I have read and understood all the rules and conditions. I agree to comply with them.**", key="rules_checkbox")
+    
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("I Agree and Continue", type="primary", use_container_width=True, disabled=not agreed):
+            st.session_state.rules_acknowledged = True
+            st.rerun()
+    
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.stop()
+    
+    return False
+
+
 def main() -> None:
     st.set_page_config(page_title="Photo Contest", page_icon="📸", layout="centered")
     inject_css()
+    
+    # Show rules modal first - must acknowledge before proceeding
+    if not show_rules_modal():
+        return  # Stop execution until rules are acknowledged
+    
     st.markdown(
         """
 <div class="hero">
@@ -660,10 +820,11 @@ def main() -> None:
 
     user_info = require_user()
     if not user_info:
-        st.warning("Please login or register to continue.")
+        st.warning("Please login to continue.")
         return
     
-    username = user_info.get("username", "")
+    employee_id = user_info.get("employee_id", "")
+    is_admin = user_info.get("is_admin", False) or (employee_id.upper() == ADMIN_USERNAME.upper())
     
     # Logout button
     if st.sidebar.button("Logout", key="logout_btn"):
@@ -671,11 +832,12 @@ def main() -> None:
         st.rerun()
 
     # Get current phase from toggle (admin only)
-    voting_phase = phase_toggle(username)
+    voting_phase = phase_toggle(employee_id if is_admin else "")
     
     # Show admin controls (End Voting button and Reset Contest button)
-    end_voting_button(username)
-    reset_contest_button(username)
+    if is_admin:
+        end_voting_button(employee_id)
+        reset_contest_button(employee_id)
     
     voting_ended = get_voting_ended()
 
@@ -689,15 +851,15 @@ def main() -> None:
         # Voting Phase: Show voting, hide leaderboard (results hidden during voting)
         st.info("📊 **Voting Phase Active** - Uploading is disabled. You can now vote for your favorite photos. Results are hidden until voting ends.")
         st.divider()
-        rating_section(username)
+        rating_section(employee_id)
         # Leaderboard is HIDDEN during voting to prevent influence
     else:
         # Upload Phase: Show upload and gallery, hide voting and leaderboard
         st.info("📤 **Upload Phase Active** - Upload your photos. Voting will begin after the admin enables voting phase.")
         st.divider()
-        upload_section(username)
+        upload_section(employee_id)
         st.divider()
-        gallery_section(username)
+        gallery_section(employee_id)
         # Leaderboard is HIDDEN during upload phase
 
 
