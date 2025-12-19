@@ -957,6 +957,27 @@ def main() -> None:
     if st.sidebar.button("Logout", key="logout_btn"):
         st.session_state.authenticated_user = {}
         st.rerun()
+    
+    # Cloudinary Status Indicator
+    st.sidebar.divider()
+    st.sidebar.header("Storage Status")
+    if CLOUDINARY_AVAILABLE and is_cloudinary_configured():
+        st.sidebar.success("✅ Cloudinary Active")
+        st.sidebar.caption("Photos stored in cloud (unlimited)")
+        try:
+            init_cloudinary()
+            secrets = st.secrets.get("cloudinary", {})
+            cloud_name = secrets.get("cloud_name", "N/A")
+            st.sidebar.caption(f"Cloud: {cloud_name}")
+        except:
+            pass
+    else:
+        st.sidebar.warning("⚠️ Cloudinary Not Configured")
+        st.sidebar.caption("Using base64 storage (~10-20 photos max)")
+        if not CLOUDINARY_AVAILABLE:
+            st.sidebar.caption("Cloudinary package not installed")
+        else:
+            st.sidebar.caption("Add credentials in Streamlit Secrets")
 
     # Get current phase from toggle (admin only)
     voting_phase = phase_toggle(employee_id if is_admin else "")
