@@ -1,4 +1,6 @@
+import base64
 import hashlib
+import io
 import json
 import os
 import uuid
@@ -7,6 +9,15 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 from PIL import Image
+
+# Try to import Cloudinary, but allow app to work without it
+try:
+    import cloudinary
+    import cloudinary.uploader
+    import cloudinary.api
+    CLOUDINARY_AVAILABLE = True
+except ImportError:
+    CLOUDINARY_AVAILABLE = False
 
 
 # Paths
@@ -135,8 +146,13 @@ def ensure_structure() -> None:
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     try:
         photos_df = pd.read_csv(PHOTOS_CSV)
+        # Ensure cloudinary_url and image_base64 columns exist for backward compatibility
+        if "cloudinary_url" not in photos_df.columns:
+            photos_df["cloudinary_url"] = None
+        if "image_base64" not in photos_df.columns:
+            photos_df["image_base64"] = None
     except pd.errors.EmptyDataError:
-        photos_df = pd.DataFrame(columns=["photo_id", "title", "filename", "uploader", "uploaded_at"])
+        photos_df = pd.DataFrame(columns=["photo_id", "title", "filename", "uploader", "uploaded_at", "cloudinary_url", "image_base64"])
 
     try:
         ratings_df = pd.read_csv(RATINGS_CSV)
@@ -238,15 +254,108 @@ def get_user_photo_count(employee_id: str) -> int:
     return len(photos_df[photos_df["uploader"].str.upper() == employee_id.upper()])
 
 
+def is_cloudinary_configured() -> bool:
+    """Check if Cloudinary is configured via Streamlit secrets."""
+    if not CLOUDINARY_AVAILABLE:
+        return False
+    try:
+        secrets = st.secrets.get("cloudinary", {})
+        return bool(secrets.get("cloud_name") and secrets.get("api_key") and secrets.get("api_secret"))
+    except Exception:
+        return False
+
+
+def init_cloudinary() -> None:
+    """Initialize Cloudinary with credentials from Streamlit secrets."""
+    if not CLOUDINARY_AVAILABLE or not is_cloudinary_configured():
+        return
+    try:
+        secrets = st.secrets.get("cloudinary", {})
+        cloudinary.config(
+            cloud_name=secrets.get("cloud_name"),
+            api_key=secrets.get("api_key"),
+            api_secret=secrets.get("api_secret"),
+            secure=True
+        )
+    except Exception:
+        pass
+
+
+def get_photo_image(photo_row: pd.Series) -> Image.Image | None:
+    """Get photo image from Cloudinary (preferred), base64, or local file (fallback)."""
+    photo_id = photo_row.get("photo_id", "")
+    
+    # Try Cloudinary first (best for cloud deployment)
+    if CLOUDINARY_AVAILABLE and is_cloudinary_configured() and photo_id:
+        try:
+            init_cloudinary()
+            # Check if cloudinary_url exists in the row
+            if "cloudinary_url" in photo_row and pd.notna(photo_row["cloudinary_url"]) and photo_row["cloudinary_url"]:
+                import requests
+                response = requests.get(photo_row["cloudinary_url"], timeout=10)
+                if response.status_code == 200:
+                    return Image.open(io.BytesIO(response.content))
+        except Exception:
+            pass
+    
+    # Try base64 (for backward compatibility)
+    if "image_base64" in photo_row and pd.notna(photo_row["image_base64"]) and photo_row["image_base64"]:
+        try:
+            image_data = base64.b64decode(photo_row["image_base64"])
+            return Image.open(io.BytesIO(image_data))
+        except Exception:
+            pass
+    
+    # Fallback to local file
+    file_path = os.path.join(PHOTOS_DIR, photo_row.get("filename", ""))
+    if file_path and os.path.exists(file_path):
+        try:
+            return Image.open(file_path)
+        except Exception:
+            pass
+    
+    return None
+
+
 def save_photo(file, title: str, employee_id: str) -> None:
-    """Persist uploaded photo and metadata."""
+    """Persist uploaded photo and metadata. Upload to Cloudinary if configured, else use base64."""
     ext = os.path.splitext(file.name)[1].lower()
     photo_id = str(uuid.uuid4())
     filename = f"{photo_id}{ext}"
     file_path = os.path.join(PHOTOS_DIR, filename)
 
     image = Image.open(file).convert("RGB")
+    
+    # Save locally (for backward compatibility)
     image.save(file_path)
+    
+    cloudinary_url = None
+    
+    # Upload to Cloudinary if configured (best for cloud deployment)
+    if CLOUDINARY_AVAILABLE and is_cloudinary_configured():
+        try:
+            init_cloudinary()
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=85)
+            buffer.seek(0)
+            
+            upload_result = cloudinary.uploader.upload(
+                buffer,
+                public_id=f"photo_contest/{photo_id}",
+                folder="photo_contest",
+                resource_type="image"
+            )
+            cloudinary_url = upload_result.get("secure_url") or upload_result.get("url")
+        except Exception as e:
+            # If Cloudinary upload fails, fall back to base64
+            pass
+    
+    # Store as base64 if Cloudinary not configured or upload failed
+    image_base64 = None
+    if not cloudinary_url:
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=85)
+        image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     photos_df, _ = load_data()
     new_row = {
@@ -255,13 +364,15 @@ def save_photo(file, title: str, employee_id: str) -> None:
         "filename": filename,
         "uploader": employee_id.strip().upper(),
         "uploaded_at": datetime.utcnow().isoformat(),
+        "cloudinary_url": cloudinary_url,  # Cloudinary URL if available
+        "image_base64": image_base64,  # Base64 fallback if Cloudinary not used
     }
     photos_df = pd.concat([photos_df, pd.DataFrame([new_row])], ignore_index=True)
     photos_df.to_csv(PHOTOS_CSV, index=False)
 
 
 def delete_photo(photo_id: str) -> None:
-    """Delete a photo: remove file and database entries."""
+    """Delete a photo: remove from Cloudinary, local file, and database entries."""
     photos_df, ratings_df = load_data()
     
     # Find the photo to delete
@@ -269,14 +380,29 @@ def delete_photo(photo_id: str) -> None:
     if photo_row.empty:
         return
     
-    # Delete the physical file
-    filename = photo_row.iloc[0]["filename"]
-    file_path = os.path.join(PHOTOS_DIR, filename)
-    if os.path.exists(file_path):
+    photo_data = photo_row.iloc[0]
+    
+    # Delete from Cloudinary if configured
+    if CLOUDINARY_AVAILABLE and is_cloudinary_configured():
         try:
-            os.remove(file_path)
-        except OSError:
-            pass  # File might already be deleted
+            init_cloudinary()
+            cloudinary_url = photo_data.get("cloudinary_url")
+            if cloudinary_url and pd.notna(cloudinary_url):
+                # Extract public_id from URL or use photo_id
+                public_id = f"photo_contest/{photo_id}"
+                cloudinary.uploader.destroy(public_id, resource_type="image")
+        except Exception:
+            pass  # Continue even if Cloudinary delete fails
+    
+    # Delete the physical file
+    filename = photo_data.get("filename")
+    if filename:
+        file_path = os.path.join(PHOTOS_DIR, filename)
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass  # File might already be deleted
     
     # Remove photo from photos.csv
     photos_df = photos_df[photos_df["photo_id"] != photo_id]
@@ -566,12 +692,12 @@ def gallery_section(employee_id: str = "") -> None:
         cols = st.columns(len(row_df))
         for col, (_, row) in zip(cols, row_df.iterrows()):
             photo_id = row["photo_id"]
-            file_path = os.path.join(PHOTOS_DIR, row["filename"])
             
             with col:
                 st.markdown('<div class="photo-card">', unsafe_allow_html=True)
-                if os.path.exists(file_path):
-                    st.image(file_path, caption=None)
+                photo_image = get_photo_image(row)
+                if photo_image:
+                    st.image(photo_image, caption=None)
                 else:
                     st.warning("Image file missing.")
                 st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
@@ -621,12 +747,12 @@ def rating_section(employee_id: str) -> None:
         cols = st.columns(len(row_df))
         for col, (_, row) in zip(cols, row_df.iterrows()):
             photo_id = row["photo_id"]
-            file_path = os.path.join(PHOTOS_DIR, row["filename"])
 
             with col:
                 st.markdown('<div class="photo-card">', unsafe_allow_html=True)
-                if os.path.exists(file_path):
-                    st.image(file_path, caption=None)
+                photo_image = get_photo_image(row)
+                if photo_image:
+                    st.image(photo_image, caption=None)
                 else:
                     st.warning("Image file missing.")
                 st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
