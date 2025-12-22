@@ -1203,7 +1203,7 @@ def show_rules_modal() -> bool:
     # Show rules prominently - all in one HTML block to avoid empty containers
     st.markdown("""
     <div class="rules-container">
-    <div class="contest-title">Income Tax Photography League</div>
+    <div class="contest-title">Coordination Photography League</div>
     <div class="contest-subtitle">In-House Photo Contest</div>
     
     <div class="rules-title">📋 Rules for Departmental Photo Competition</div>
@@ -1272,7 +1272,7 @@ def show_rules_modal() -> bool:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Photo Contest", page_icon="📸", layout="centered")
+    st.set_page_config(page_title="Coordination Photography League", page_icon="📸", layout="centered")
     inject_css()
     
     # Show rules modal first - must acknowledge before proceeding
@@ -1284,7 +1284,7 @@ def main() -> None:
     # Display main page title (on ALL pages - before and after login)
     st.markdown("""
     <div class="main-page-title">
-        <h1>Income Tax Photography League</h1>
+        <h1>Coordination Photography League</h1>
         <h2>In-House Photo Contest</h2>
     </div>
     """, unsafe_allow_html=True)
