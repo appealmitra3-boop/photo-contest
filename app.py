@@ -232,10 +232,21 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         if "image_base64" not in photos_df.columns:
             photos_df["image_base64"] = None
         # Ensure status and rejection_reason columns exist for moderation
+        needs_save = False
         if "status" not in photos_df.columns:
             photos_df["status"] = "approved"  # Set existing photos as approved for backward compatibility
+            needs_save = True
         if "rejection_reason" not in photos_df.columns:
             photos_df["rejection_reason"] = None
+            needs_save = True
+        # Fix any NaN or empty status values - set to approved for backward compatibility
+        if photos_df["status"].isna().any() or (photos_df["status"] == "").any():
+            photos_df["status"] = photos_df["status"].fillna("approved")
+            photos_df.loc[photos_df["status"] == "", "status"] = "approved"
+            needs_save = True
+        # Save only if we made changes
+        if needs_save:
+            photos_df.to_csv(PHOTOS_CSV, index=False)
         # Ensure theme column exists
         if "theme" not in photos_df.columns:
             photos_df["theme"] = "Unspecified"
@@ -646,8 +657,9 @@ def compute_leaderboard(show_uploader: bool = False) -> pd.DataFrame:
     """Compute leaderboard. Show uploader names only if show_uploader=True. Only includes approved photos."""
     photos_df, ratings_df = load_data()
     
-    # Filter to only approved photos
-    approved_df = photos_df[photos_df["status"] == "approved"].copy()
+    # Filter to only approved photos (handle NaN/empty values)
+    photos_df["status"] = photos_df["status"].fillna("approved")
+    approved_df = photos_df[photos_df["status"].astype(str).str.lower() == "approved"].copy()
     
     if approved_df.empty:
         columns = ["rank", "title", "uploader", "votes"] if show_uploader else ["rank", "title", "votes"]
@@ -1063,7 +1075,8 @@ def gallery_section(employee_id: str = "") -> None:
     if is_admin:
         display_df = photos_df.copy()
     else:
-        display_df = photos_df[photos_df["status"] == "approved"].copy()
+        photos_df["status"] = photos_df["status"].fillna("approved")
+        display_df = photos_df[photos_df["status"].astype(str).str.lower() == "approved"].copy()
     
     if display_df.empty:
         if is_admin:
@@ -1123,8 +1136,9 @@ def rating_section(employee_id: str) -> None:
     photos_df, ratings_df = load_data()
     is_admin = employee_id.upper() == ADMIN_USERNAME.upper()
 
-    # Filter to show only approved photos
-    approved_df = photos_df[photos_df["status"] == "approved"].copy()
+    # Filter to show only approved photos (handle NaN/empty values)
+    photos_df["status"] = photos_df["status"].fillna("approved")
+    approved_df = photos_df[photos_df["status"].astype(str).str.lower() == "approved"].copy()
     
     if approved_df.empty:
         st.info("No approved photos available for voting.")
