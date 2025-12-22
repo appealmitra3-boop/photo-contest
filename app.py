@@ -149,7 +149,7 @@ def ensure_structure() -> None:
     os.makedirs(PHOTOS_DIR, exist_ok=True)
 
     if not os.path.exists(PHOTOS_CSV):
-        pd.DataFrame(columns=["photo_id", "title", "filename", "uploader", "uploaded_at"]).to_csv(
+        pd.DataFrame(columns=["photo_id", "title", "filename", "uploader", "uploaded_at", "status", "rejection_reason"]).to_csv(
             PHOTOS_CSV, index=False
         )
     if not os.path.exists(RATINGS_CSV):
@@ -174,6 +174,11 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
             photos_df["cloudinary_url"] = None
         if "image_base64" not in photos_df.columns:
             photos_df["image_base64"] = None
+        # Ensure status and rejection_reason columns exist for moderation
+        if "status" not in photos_df.columns:
+            photos_df["status"] = "approved"  # Set existing photos as approved for backward compatibility
+        if "rejection_reason" not in photos_df.columns:
+            photos_df["rejection_reason"] = None
     except pd.errors.EmptyDataError:
         photos_df = pd.DataFrame(columns=["photo_id", "title", "filename", "uploader", "uploaded_at", "cloudinary_url", "image_base64"])
 
@@ -395,8 +400,26 @@ def save_photo(file, title: str, employee_id: str) -> None:
         "uploaded_at": datetime.utcnow().isoformat(),
         "cloudinary_url": cloudinary_url,  # Cloudinary URL if available
         "image_base64": image_base64,  # Base64 fallback if Cloudinary not used
+        "status": "pending",  # New photos start as pending approval
+        "rejection_reason": None,  # Rejection reason if rejected
     }
     photos_df = pd.concat([photos_df, pd.DataFrame([new_row])], ignore_index=True)
+    photos_df.to_csv(PHOTOS_CSV, index=False)
+
+
+def approve_photo(photo_id: str) -> None:
+    """Approve a pending photo, making it visible to all users."""
+    photos_df, _ = load_data()
+    photos_df.loc[photos_df["photo_id"] == photo_id, "status"] = "approved"
+    photos_df.loc[photos_df["photo_id"] == photo_id, "rejection_reason"] = None
+    photos_df.to_csv(PHOTOS_CSV, index=False)
+
+
+def reject_photo(photo_id: str, reason: str = "") -> None:
+    """Reject a pending photo, keeping it hidden from other users."""
+    photos_df, _ = load_data()
+    photos_df.loc[photos_df["photo_id"] == photo_id, "status"] = "rejected"
+    photos_df.loc[photos_df["photo_id"] == photo_id, "rejection_reason"] = reason if reason else None
     photos_df.to_csv(PHOTOS_CSV, index=False)
 
 
@@ -506,14 +529,18 @@ def set_voting_ended(ended: bool) -> None:
 
 
 def compute_leaderboard(show_uploader: bool = False) -> pd.DataFrame:
-    """Compute leaderboard. Show uploader names only if show_uploader=True."""
+    """Compute leaderboard. Show uploader names only if show_uploader=True. Only includes approved photos."""
     photos_df, ratings_df = load_data()
-    if photos_df.empty:
+    
+    # Filter to only approved photos
+    approved_df = photos_df[photos_df["status"] == "approved"].copy()
+    
+    if approved_df.empty:
         columns = ["rank", "title", "uploader", "votes"] if show_uploader else ["rank", "title", "votes"]
         return pd.DataFrame(columns=columns)
 
     agg = ratings_df.groupby("photo_id")["rating"].count().rename("votes")
-    merged = photos_df.merge(agg, left_on="photo_id", right_index=True, how="left")
+    merged = approved_df.merge(agg, left_on="photo_id", right_index=True, how="left")
     merged["votes"] = merged["votes"].fillna(0).astype(int)
     merged = merged.sort_values(by=["votes", "uploaded_at"], ascending=[False, True]).reset_index(drop=True)
     merged.insert(0, "rank", range(1, len(merged) + 1))
@@ -650,9 +677,140 @@ def reset_contest_button(employee_id: str) -> None:
             st.rerun()
 
 
+def moderation_section(employee_id: str) -> None:
+    """Admin-only section to review and approve/reject pending photos."""
+    photos_df, _ = load_data()
+    
+    # Get pending photos
+    pending_df = photos_df[photos_df["status"] == "pending"].copy()
+    rejected_df = photos_df[photos_df["status"] == "rejected"].copy()
+    
+    st.markdown('<div class="section-title">📋 Photo Moderation</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-note">Review and approve/reject uploaded photos. Only approved photos are visible to other users.</div>', unsafe_allow_html=True)
+    
+    # Show pending photos
+    if pending_df.empty:
+        st.success("✅ No pending photos. All photos have been reviewed.")
+    else:
+        st.subheader(f"⏳ Pending Review ({len(pending_df)} photo(s))")
+        
+        cols_per_row = 2
+        pending_rows = [
+            pending_df.iloc[i : i + cols_per_row] for i in range(0, len(pending_df), cols_per_row)
+        ]
+        
+        for row_df in pending_rows:
+            cols = st.columns(len(row_df))
+            for col, (_, row) in zip(cols, row_df.iterrows()):
+                photo_id = row["photo_id"]
+                
+                with col:
+                    st.markdown('<div class="photo-card" style="border: 2px solid #f59e0b;">', unsafe_allow_html=True)
+                    photo_image = get_photo_image(row)
+                    if photo_image:
+                        st.image(photo_image, caption=None)
+                    else:
+                        st.warning("Image file missing.")
+                    
+                    st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
+                    
+                    # Show uploader info for admin
+                    uploader_id = row.get("uploader", "Unknown")
+                    users_df = load_users()
+                    uploader_info = users_df[users_df["employee_id"].astype(str).str.upper() == uploader_id.upper()]
+                    if not uploader_info.empty:
+                        uploader_name = uploader_info.iloc[0].get("name", "Unknown")
+                        st.caption(f"Uploaded by: {uploader_name} ({uploader_id})")
+                    
+                    col_approve, col_reject = st.columns(2)
+                    with col_approve:
+                        if st.button("✅ Approve", key=f"approve-{photo_id}", use_container_width=True, type="primary"):
+                            approve_photo(photo_id)
+                            st.success(f"Photo '{row['title']}' approved!")
+                            st.rerun()
+                    
+                    with col_reject:
+                        if st.button("❌ Reject", key=f"reject-{photo_id}", use_container_width=True):
+                            reject_photo(photo_id, "Rejected by admin")
+                            st.info(f"Photo '{row['title']}' rejected.")
+                            st.rerun()
+                    
+                    st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Show rejected photos (optional - admin can see what was rejected)
+    if not rejected_df.empty:
+        with st.expander(f"❌ Rejected Photos ({len(rejected_df)})"):
+            cols_per_row = 2
+            rejected_rows = [
+                rejected_df.iloc[i : i + cols_per_row] for i in range(0, len(rejected_df), cols_per_row)
+            ]
+            
+            for row_df in rejected_rows:
+                cols = st.columns(len(row_df))
+                for col, (_, row) in zip(cols, row_df.iterrows()):
+                    photo_id = row["photo_id"]
+                    
+                    with col:
+                        st.markdown('<div class="photo-card" style="border: 2px solid #ef4444; opacity: 0.7;">', unsafe_allow_html=True)
+                        photo_image = get_photo_image(row)
+                        if photo_image:
+                            st.image(photo_image, caption=None)
+                        else:
+                            st.warning("Image file missing.")
+                        
+                        st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
+                        st.caption(f"Status: ❌ Rejected")
+                        
+                        if st.button("✅ Approve", key=f"approve-rejected-{photo_id}", use_container_width=True):
+                            approve_photo(photo_id)
+                            st.success(f"Photo '{row['title']}' approved!")
+                            st.rerun()
+                        
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+
 def upload_section(employee_id: str) -> None:
     """Upload section - only shown during Upload Phase."""
     st.markdown('<div class="section-title">Upload a Photo</div>', unsafe_allow_html=True)
+    
+    # Show user's own photos with status
+    photos_df, _ = load_data()
+    user_photos = photos_df[photos_df["uploader"].astype(str).str.upper() == employee_id.upper()].copy()
+    
+    if not user_photos.empty:
+        st.markdown("### Your Uploaded Photos")
+        cols_per_row = 3
+        user_photo_rows = [
+            user_photos.iloc[i : i + cols_per_row] for i in range(0, len(user_photos), cols_per_row)
+        ]
+        
+        for row_df in user_photo_rows:
+            cols = st.columns(len(row_df))
+            for col, (_, row) in zip(cols, row_df.iterrows()):
+                with col:
+                    st.markdown('<div class="photo-card">', unsafe_allow_html=True)
+                    photo_image = get_photo_image(row)
+                    if photo_image:
+                        st.image(photo_image, caption=None, use_container_width=True)
+                    st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
+                    
+                    # Show status badge
+                    status = row.get("status", "approved")
+                    if status == "pending":
+                        st.markdown('<div style="color: #f59e0b; font-weight: bold; margin: 0.5rem 0;">⏳ Pending Review</div>', unsafe_allow_html=True)
+                        st.caption("Waiting for admin approval")
+                    elif status == "approved":
+                        st.markdown('<div style="color: #10b981; font-weight: bold; margin: 0.5rem 0;">✅ Approved</div>', unsafe_allow_html=True)
+                        st.caption("Visible to all users")
+                    elif status == "rejected":
+                        st.markdown('<div style="color: #ef4444; font-weight: bold; margin: 0.5rem 0;">❌ Rejected</div>', unsafe_allow_html=True)
+                        rejection_reason = row.get("rejection_reason", "")
+                        if rejection_reason:
+                            st.caption(f"Reason: {rejection_reason}")
+                    
+                    st.markdown("</div>", unsafe_allow_html=True)
+        
+        st.divider()
     
     # Check photo count
     photo_count = get_user_photo_count(employee_id)
@@ -687,7 +845,7 @@ def upload_section(employee_id: str) -> None:
             return
         
         save_photo(uploaded_file, title, employee_id)
-        st.success(f"Photo '{title.strip()}' uploaded successfully!")
+        st.success(f"Photo '{title.strip()}' uploaded successfully! ⏳ It is pending admin approval and will be visible to others once approved.")
         # Clear the form after successful upload
         if title_key in st.session_state:
             del st.session_state[title_key]
@@ -697,24 +855,33 @@ def upload_section(employee_id: str) -> None:
 
 
 def gallery_section(employee_id: str = "") -> None:
-    """Show gallery of uploaded photos (without uploader names) during Upload Phase."""
+    """Show gallery of uploaded photos (without uploader names) during Upload Phase. Only shows approved photos."""
     photos_df, _ = load_data()
     is_admin = employee_id.upper() == ADMIN_USERNAME.upper() if employee_id else False
     
-    if photos_df.empty:
-        st.info("No photos uploaded yet.")
+    # Filter to show only approved photos to regular users, all photos to admin
+    if is_admin:
+        display_df = photos_df.copy()
+    else:
+        display_df = photos_df[photos_df["status"] == "approved"].copy()
+    
+    if display_df.empty:
+        if is_admin:
+            st.info("No photos uploaded yet.")
+        else:
+            st.info("No approved photos available yet.")
         return
     
     st.markdown('<div class="section-title">Uploaded Photos</div>', unsafe_allow_html=True)
     if is_admin:
         st.markdown('<div class="section-note">All submitted entries. Admin: Delete buttons are available below each photo.</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div class="section-note">All submitted entries (uploader names hidden for anonymity).</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-note">All approved entries (uploader names hidden for anonymity).</div>', unsafe_allow_html=True)
     
     # Display in a simple grid (3 columns per row)
     cols_per_row = 3
     photo_rows = [
-        photos_df.iloc[i : i + cols_per_row] for i in range(0, len(photos_df), cols_per_row)
+        display_df.iloc[i : i + cols_per_row] for i in range(0, len(display_df), cols_per_row)
     ]
     
     for row_df in photo_rows:
@@ -731,6 +898,14 @@ def gallery_section(employee_id: str = "") -> None:
                     st.warning("Image file missing.")
                 st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
                 
+                # Show status badge for admin
+                if is_admin:
+                    status = row.get("status", "approved")
+                    if status == "pending":
+                        st.markdown('<div style="color: #f59e0b; font-weight: bold; margin: 0.5rem 0;">⏳ Pending</div>', unsafe_allow_html=True)
+                    elif status == "rejected":
+                        st.markdown('<div style="color: #ef4444; font-weight: bold; margin: 0.5rem 0;">❌ Rejected</div>', unsafe_allow_html=True)
+                
                 # Show delete button for admin
                 if is_admin:
                     if st.button("🗑️ Delete", key=f"delete-{photo_id}", use_container_width=True):
@@ -742,13 +917,16 @@ def gallery_section(employee_id: str = "") -> None:
 
 
 def rating_section(employee_id: str) -> None:
-    """Voting section - only shown during Voting Phase, with anonymity."""
+    """Voting section - only shown during Voting Phase, with anonymity. Only shows approved photos."""
     st.markdown('<div class="section-title">Vote for Photos</div>', unsafe_allow_html=True)
     photos_df, ratings_df = load_data()
     is_admin = employee_id.upper() == ADMIN_USERNAME.upper()
 
-    if photos_df.empty:
-        st.info("No photos available for voting.")
+    # Filter to show only approved photos
+    approved_df = photos_df[photos_df["status"] == "approved"].copy()
+    
+    if approved_df.empty:
+        st.info("No approved photos available for voting.")
         return
 
     if is_admin:
@@ -769,7 +947,7 @@ def rating_section(employee_id: str) -> None:
     # Display in a simple grid (3 columns per row)
     cols_per_row = 3
     photo_rows = [
-        photos_df.iloc[i : i + cols_per_row] for i in range(0, len(photos_df), cols_per_row)
+        approved_df.iloc[i : i + cols_per_row] for i in range(0, len(approved_df), cols_per_row)
     ]
 
     for row_df in photo_rows:
@@ -1030,6 +1208,11 @@ def main() -> None:
         reset_contest_button(employee_id)
     
     voting_ended = get_voting_ended()
+
+    # Show moderation section for admin (always visible, regardless of phase)
+    if is_admin:
+        moderation_section(employee_id)
+        st.divider()
 
     # Show appropriate sections based on phase
     if voting_ended:
