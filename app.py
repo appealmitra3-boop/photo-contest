@@ -32,6 +32,10 @@ USERS_CSV = os.path.join(DATA_DIR, "users.csv")
 # Configuration
 ADMIN_USERNAME = "alphabetagamma"  # Admin username for contest control
 MAX_PHOTOS_PER_USER = 2  # Maximum photos a user can upload
+THEMES = [
+    "Happy Department is an Efficient Department",
+    "New Income Tax Act",
+]
 
 
 def inject_css() -> None:
@@ -149,9 +153,18 @@ def ensure_structure() -> None:
     os.makedirs(PHOTOS_DIR, exist_ok=True)
 
     if not os.path.exists(PHOTOS_CSV):
-        pd.DataFrame(columns=["photo_id", "title", "filename", "uploader", "uploaded_at", "status", "rejection_reason"]).to_csv(
-            PHOTOS_CSV, index=False
-        )
+        pd.DataFrame(
+            columns=[
+                "photo_id",
+                "title",
+                "filename",
+                "uploader",
+                "uploaded_at",
+                "status",
+                "rejection_reason",
+                "theme",
+            ]
+        ).to_csv(PHOTOS_CSV, index=False)
     if not os.path.exists(RATINGS_CSV):
         pd.DataFrame(columns=["photo_id", "user_id", "rating"]).to_csv(RATINGS_CSV, index=False)
     
@@ -179,8 +192,24 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
             photos_df["status"] = "approved"  # Set existing photos as approved for backward compatibility
         if "rejection_reason" not in photos_df.columns:
             photos_df["rejection_reason"] = None
+        # Ensure theme column exists
+        if "theme" not in photos_df.columns:
+            photos_df["theme"] = "Unspecified"
     except pd.errors.EmptyDataError:
-        photos_df = pd.DataFrame(columns=["photo_id", "title", "filename", "uploader", "uploaded_at", "cloudinary_url", "image_base64"])
+        photos_df = pd.DataFrame(
+            columns=[
+                "photo_id",
+                "title",
+                "filename",
+                "uploader",
+                "uploaded_at",
+                "cloudinary_url",
+                "image_base64",
+                "status",
+                "rejection_reason",
+                "theme",
+            ]
+        )
 
     try:
         ratings_df = pd.read_csv(RATINGS_CSV)
@@ -284,6 +313,9 @@ def get_user_photo_count(employee_id: str) -> int:
     photos_df["uploader"] = photos_df["uploader"].astype(str)
     # Filter out 'nan' strings
     photos_df = photos_df[photos_df["uploader"] != "nan"]
+    # Exclude rejected photos from count so users can re-upload if rejected
+    if "status" in photos_df.columns:
+        photos_df = photos_df[photos_df["status"] != "rejected"]
     
     return len(photos_df[photos_df["uploader"].str.upper() == employee_id.upper()])
 
@@ -351,7 +383,7 @@ def get_photo_image(photo_row: pd.Series) -> Image.Image | None:
     return None
 
 
-def save_photo(file, title: str, employee_id: str) -> None:
+def save_photo(file, title: str, employee_id: str, theme: str) -> None:
     """Persist uploaded photo and metadata. Upload to Cloudinary if configured, else use base64."""
     ext = os.path.splitext(file.name)[1].lower()
     photo_id = str(uuid.uuid4())
@@ -402,6 +434,7 @@ def save_photo(file, title: str, employee_id: str) -> None:
         "image_base64": image_base64,  # Base64 fallback if Cloudinary not used
         "status": "pending",  # New photos start as pending approval
         "rejection_reason": None,  # Rejection reason if rejected
+        "theme": theme,
     }
     photos_df = pd.concat([photos_df, pd.DataFrame([new_row])], ignore_index=True)
     photos_df.to_csv(PHOTOS_CSV, index=False)
@@ -684,6 +717,8 @@ def moderation_section(employee_id: str) -> None:
     # Get pending photos
     pending_df = photos_df[photos_df["status"] == "pending"].copy()
     rejected_df = photos_df[photos_df["status"] == "rejected"].copy()
+    pending_df["theme"] = pending_df.get("theme", "Unspecified").fillna("Unspecified")
+    rejected_df["theme"] = rejected_df.get("theme", "Unspecified").fillna("Unspecified")
     
     st.markdown('<div class="section-title">📋 Photo Moderation</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-note">Review and approve/reject uploaded photos. Only approved photos are visible to other users.</div>', unsafe_allow_html=True)
@@ -693,65 +728,30 @@ def moderation_section(employee_id: str) -> None:
         st.success("✅ No pending photos. All photos have been reviewed.")
     else:
         st.subheader(f"⏳ Pending Review ({len(pending_df)} photo(s))")
-        
-        cols_per_row = 2
-        pending_rows = [
-            pending_df.iloc[i : i + cols_per_row] for i in range(0, len(pending_df), cols_per_row)
-        ]
-        
-        for row_df in pending_rows:
-            cols = st.columns(len(row_df))
-            for col, (_, row) in zip(cols, row_df.iterrows()):
-                photo_id = row["photo_id"]
-                
-                with col:
-                    st.markdown('<div class="photo-card" style="border: 2px solid #f59e0b;">', unsafe_allow_html=True)
-                    photo_image = get_photo_image(row)
-                    if photo_image:
-                        st.image(photo_image, caption=None)
-                    else:
-                        st.warning("Image file missing.")
-                    
-                    st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
-                    
-                    # Show uploader info for admin
-                    uploader_id = row.get("uploader", "Unknown")
-                    users_df = load_users()
-                    uploader_info = users_df[users_df["employee_id"].astype(str).str.upper() == uploader_id.upper()]
-                    if not uploader_info.empty:
-                        uploader_name = uploader_info.iloc[0].get("name", "Unknown")
-                        st.caption(f"Uploaded by: {uploader_name} ({uploader_id})")
-                    
-                    col_approve, col_reject = st.columns(2)
-                    with col_approve:
-                        if st.button("✅ Approve", key=f"approve-{photo_id}", use_container_width=True, type="primary"):
-                            approve_photo(photo_id)
-                            st.success(f"Photo '{row['title']}' approved!")
-                            st.rerun()
-                    
-                    with col_reject:
-                        if st.button("❌ Reject", key=f"reject-{photo_id}", use_container_width=True):
-                            reject_photo(photo_id, "Rejected by admin")
-                            st.info(f"Photo '{row['title']}' rejected.")
-                            st.rerun()
-                    
-                    st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Show rejected photos (optional - admin can see what was rejected)
-    if not rejected_df.empty:
-        with st.expander(f"❌ Rejected Photos ({len(rejected_df)})"):
+        theme_groups = THEMES + ["Other/Unspecified"]
+        for theme in theme_groups:
+            if theme == "Other/Unspecified":
+                theme_df = pending_df[~pending_df["theme"].isin(THEMES)]
+                display_name = "Other / Unspecified"
+            else:
+                theme_df = pending_df[pending_df["theme"] == theme]
+                display_name = theme
+            if theme_df.empty:
+                continue
+            
+            st.markdown(f"**Theme: {display_name} ({len(theme_df)} pending)**")
             cols_per_row = 2
-            rejected_rows = [
-                rejected_df.iloc[i : i + cols_per_row] for i in range(0, len(rejected_df), cols_per_row)
+            pending_rows = [
+                theme_df.iloc[i : i + cols_per_row] for i in range(0, len(theme_df), cols_per_row)
             ]
             
-            for row_df in rejected_rows:
+            for row_df in pending_rows:
                 cols = st.columns(len(row_df))
                 for col, (_, row) in zip(cols, row_df.iterrows()):
                     photo_id = row["photo_id"]
                     
                     with col:
-                        st.markdown('<div class="photo-card" style="border: 2px solid #ef4444; opacity: 0.7;">', unsafe_allow_html=True)
+                        st.markdown('<div class="photo-card" style="border: 2px solid #f59e0b;">', unsafe_allow_html=True)
                         photo_image = get_photo_image(row)
                         if photo_image:
                             st.image(photo_image, caption=None)
@@ -759,14 +759,74 @@ def moderation_section(employee_id: str) -> None:
                             st.warning("Image file missing.")
                         
                         st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
-                        st.caption(f"Status: ❌ Rejected")
+                        st.caption(f"Theme: {row.get('theme', 'Unspecified')}")
                         
-                        if st.button("✅ Approve", key=f"approve-rejected-{photo_id}", use_container_width=True):
-                            approve_photo(photo_id)
-                            st.success(f"Photo '{row['title']}' approved!")
-                            st.rerun()
+                        # Show uploader info for admin
+                        uploader_id = row.get("uploader", "Unknown")
+                        users_df = load_users()
+                        uploader_info = users_df[users_df["employee_id"].astype(str).str.upper() == uploader_id.upper()]
+                        if not uploader_info.empty:
+                            uploader_name = uploader_info.iloc[0].get("name", "Unknown")
+                            st.caption(f"Uploaded by: {uploader_name} ({uploader_id})")
+                        
+                        col_approve, col_reject = st.columns(2)
+                        with col_approve:
+                            if st.button("✅ Approve", key=f"approve-{photo_id}", use_container_width=True, type="primary"):
+                                approve_photo(photo_id)
+                                st.success(f"Photo '{row['title']}' approved!")
+                                st.rerun()
+                        
+                        with col_reject:
+                            if st.button("❌ Reject", key=f"reject-{photo_id}", use_container_width=True):
+                                reject_photo(photo_id, "Rejected by admin")
+                                st.info(f"Photo '{row['title']}' rejected.")
+                                st.rerun()
                         
                         st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Show rejected photos (optional - admin can see what was rejected)
+    if not rejected_df.empty:
+        with st.expander(f"❌ Rejected Photos ({len(rejected_df)})"):
+            theme_groups = THEMES + ["Other/Unspecified"]
+            for theme in theme_groups:
+                if theme == "Other/Unspecified":
+                    theme_df = rejected_df[~rejected_df["theme"].isin(THEMES)]
+                    display_name = "Other / Unspecified"
+                else:
+                    theme_df = rejected_df[rejected_df["theme"] == theme]
+                    display_name = theme
+                if theme_df.empty:
+                    continue
+                
+                st.markdown(f"**Theme: {display_name} ({len(theme_df)} rejected)**")
+                cols_per_row = 2
+                rejected_rows = [
+                    theme_df.iloc[i : i + cols_per_row] for i in range(0, len(theme_df), cols_per_row)
+                ]
+                
+                for row_df in rejected_rows:
+                    cols = st.columns(len(row_df))
+                    for col, (_, row) in zip(cols, row_df.iterrows()):
+                        photo_id = row["photo_id"]
+                        
+                        with col:
+                            st.markdown('<div class="photo-card" style="border: 2px solid #ef4444; opacity: 0.7;">', unsafe_allow_html=True)
+                            photo_image = get_photo_image(row)
+                            if photo_image:
+                                st.image(photo_image, caption=None)
+                            else:
+                                st.warning("Image file missing.")
+                            
+                            st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
+                            st.caption(f"Theme: {row.get('theme', 'Unspecified')}")
+                            st.caption(f"Status: ❌ Rejected")
+                            
+                            if st.button("✅ Approve", key=f"approve-rejected-{photo_id}", use_container_width=True):
+                                approve_photo(photo_id)
+                                st.success(f"Photo '{row['title']}' approved!")
+                                st.rerun()
+                            
+                            st.markdown("</div>", unsafe_allow_html=True)
 
 
 def upload_section(employee_id: str) -> None:
@@ -793,6 +853,7 @@ def upload_section(employee_id: str) -> None:
                     if photo_image:
                         st.image(photo_image, caption=None, use_container_width=True)
                     st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
+                    st.caption(f"Theme: {row.get('theme', 'Unspecified')}")
                     
                     # Show status badge
                     status = row.get("status", "approved")
@@ -826,13 +887,18 @@ def upload_section(employee_id: str) -> None:
     # Use user-specific keys to prevent cross-user state persistence
     title_key = f"title_input_{employee_id}"
     uploader_key = f"file_uploader_{employee_id}"
+    theme_key = f"theme_select_{employee_id}"
     
     title = st.text_input("Photo Title", key=title_key)
+    theme = st.selectbox("Select Theme", THEMES, index=0, key=theme_key)
     uploaded_file = st.file_uploader("Select a JPG or PNG image", type=["jpg", "jpeg", "png"], key=uploader_key)
 
     if st.button("Upload", key=f"upload_btn_{employee_id}"):
         if not title.strip():
             st.warning("Title is required.")
+            return
+        if not theme:
+            st.warning("Please select a theme.")
             return
         if not uploaded_file:
             st.warning("Please choose a file.")
@@ -844,13 +910,26 @@ def upload_section(employee_id: str) -> None:
             st.error(f"You have reached the maximum upload limit of {MAX_PHOTOS_PER_USER} photos.")
             return
         
-        save_photo(uploaded_file, title, employee_id)
+        # Enforce one photo per theme (pending/approved count; rejected can be replaced)
+        user_photos = photos_df[photos_df["uploader"].astype(str).str.upper() == employee_id.upper()].copy()
+        non_rejected = user_photos[user_photos["status"] != "rejected"] if "status" in user_photos.columns else user_photos
+        if len(non_rejected) >= MAX_PHOTOS_PER_USER:
+            st.error(f"You have reached the maximum upload limit of {MAX_PHOTOS_PER_USER} photos.")
+            return
+        theme_taken = non_rejected[non_rejected["theme"] == theme] if "theme" in non_rejected.columns else pd.DataFrame()
+        if not theme_taken.empty:
+            st.error("You have already uploaded a photo for this theme. Each user can submit one photo per theme (max 2 total).")
+            return
+        
+        save_photo(uploaded_file, title, employee_id, theme)
         st.success(f"Photo '{title.strip()}' uploaded successfully! ⏳ It is pending admin approval and will be visible to others once approved.")
         # Clear the form after successful upload
         if title_key in st.session_state:
             del st.session_state[title_key]
         if uploader_key in st.session_state:
             del st.session_state[uploader_key]
+        if theme_key in st.session_state:
+            del st.session_state[theme_key]
         st.rerun()
 
 
@@ -897,6 +976,7 @@ def gallery_section(employee_id: str = "") -> None:
                 else:
                     st.warning("Image file missing.")
                 st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
+                st.caption(f"Theme: {row.get('theme', 'Unspecified')}")
                 
                 # Show status badge for admin
                 if is_admin:
@@ -963,6 +1043,7 @@ def rating_section(employee_id: str) -> None:
                 else:
                     st.warning("Image file missing.")
                 st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
+                st.caption(f"Theme: {row.get('theme', 'Unspecified')}")
                 # Uploader name NOT displayed for anonymity
 
                 is_current = current_photo_id == photo_id
