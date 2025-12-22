@@ -185,6 +185,8 @@ def login_or_create_user(employee_id: str, name: str, posting_details: str) -> t
     
     # Check if user exists
     if not users_df.empty:
+        # Convert employee_id column to string and handle NaN values
+        users_df["employee_id"] = users_df["employee_id"].astype(str).replace("nan", "")
         user = users_df[users_df["employee_id"].str.upper() == employee_id]
         if not user.empty:
             # User exists, update info if changed
@@ -214,8 +216,12 @@ def authenticate_admin(username: str, password: str) -> tuple[bool, dict]:
     """Authenticate admin user. Returns (success, user_info_dict)."""
     users_df = load_users()
     
+    # Convert employee_id column to string and handle NaN values
+    if not users_df.empty:
+        users_df["employee_id"] = users_df["employee_id"].astype(str).replace("nan", "")
+    
     # Check if admin user exists, if not create it
-    admin_user = users_df[users_df["employee_id"].str.upper() == ADMIN_USERNAME.upper()]
+    admin_user = users_df[users_df["employee_id"].str.upper() == ADMIN_USERNAME.upper()] if not users_df.empty else pd.DataFrame()
     
     if admin_user.empty:
         # Create admin user if doesn't exist
