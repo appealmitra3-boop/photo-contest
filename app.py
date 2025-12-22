@@ -945,7 +945,13 @@ def moderation_section(employee_id: str) -> None:
 
 
 def upload_section(employee_id: str) -> None:
-    """Upload section - shown during Active Contest Phase, disabled after upload deadline."""
+    """Upload section - shown during Active Contest Phase, disabled after upload deadline. Admin cannot upload."""
+    # Admin cannot upload photos - they must login as regular user
+    is_admin = employee_id.upper() == ADMIN_USERNAME.upper() if employee_id else False
+    if is_admin:
+        st.info("ℹ️ **Admin accounts cannot upload photos.** If you want to upload photos, please login as a regular user.")
+        return
+    
     st.markdown('<div class="section-title">Upload a Photo</div>', unsafe_allow_html=True)
     
     # Check if upload deadline has passed
