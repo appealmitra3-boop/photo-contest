@@ -4,7 +4,7 @@ import io
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -217,10 +217,10 @@ def ensure_structure() -> None:
             USERS_CSV, index=False
         )
     
-    # Initialize config file with default phase (Upload Phase = False, Voting not ended)
+    # Initialize config file with default values
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "w") as f:
-            json.dump({"voting_phase_enabled": False, "voting_ended": False}, f)
+            json.dump({"upload_deadline": None, "voting_ended": False}, f)
 
 
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -564,12 +564,17 @@ def get_config() -> dict:
     try:
         with open(CONFIG_FILE, "r") as f:
             config = json.load(f)
+            # Handle backward compatibility
+            if "upload_deadline" not in config:
+                # Migrate from old config format
+                if "voting_phase_enabled" in config:
+                    config["upload_deadline"] = None
             return {
-                "voting_phase_enabled": config.get("voting_phase_enabled", False),
+                "upload_deadline": config.get("upload_deadline"),
                 "voting_ended": config.get("voting_ended", False)
             }
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"voting_phase_enabled": False, "voting_ended": False}
+        return {"upload_deadline": None, "voting_ended": False}
 
 
 def save_config(config: dict) -> None:
@@ -578,19 +583,51 @@ def save_config(config: dict) -> None:
         json.dump(config, f)
 
 
-def get_voting_phase() -> bool:
-    """Read voting phase state from config file."""
-    return get_config()["voting_phase_enabled"]
+def get_upload_deadline() -> str | None:
+    """Get upload deadline date from config file."""
+    return get_config().get("upload_deadline")
 
 
-def set_voting_phase(enabled: bool) -> None:
-    """Write voting phase state to config file, preserving voting_ended status."""
+def set_upload_deadline(deadline: str | None) -> None:
+    """Set upload deadline date in config file."""
     config = get_config()
-    config["voting_phase_enabled"] = enabled
-    # Reset voting_ended when switching back to upload phase
-    if not enabled:
-        config["voting_ended"] = False
+    config["upload_deadline"] = deadline
     save_config(config)
+
+
+def is_upload_deadline_passed() -> bool:
+    """Check if current date has passed the upload deadline."""
+    deadline = get_upload_deadline()
+    if not deadline:
+        return False  # No deadline set, uploads allowed
+    
+    try:
+        deadline_date = datetime.strptime(deadline, "%Y-%m-%d").date()
+        today = date.today()
+        return today > deadline_date
+    except (ValueError, TypeError):
+        return False
+
+
+def get_countdown_timer() -> str:
+    """Calculate and return countdown timer string until upload deadline."""
+    deadline = get_upload_deadline()
+    if not deadline:
+        return "No deadline set"
+    
+    try:
+        deadline_date = datetime.strptime(deadline, "%Y-%m-%d").date()
+        today = date.today()
+        
+        if today > deadline_date:
+            return "Upload deadline has passed"
+        elif today == deadline_date:
+            return "⏰ Upload deadline is today!"
+        else:
+            days_left = (deadline_date - today).days
+            return f"⏰ {days_left} day(s) remaining to upload"
+    except (ValueError, TypeError):
+        return "Invalid deadline format"
 
 
 def get_voting_ended() -> bool:
@@ -678,49 +715,68 @@ def require_user() -> dict:
     return {}
 
 
-def phase_toggle(employee_id: str) -> bool:
-    """Display phase toggle in sidebar and return current state. Only admin can toggle."""
+def upload_deadline_setter(employee_id: str) -> None:
+    """Display upload deadline setting in sidebar. Only admin can set deadline."""
     st.sidebar.divider()
     st.sidebar.header("Contest Control")
     
-    current_phase = get_voting_phase()
     voting_ended = get_voting_ended()
     is_admin = employee_id.upper() == ADMIN_USERNAME.upper() if employee_id else False
     
     if voting_ended:
-        phase_label = "Voting Ended - Results Available"
-    elif current_phase:
-        phase_label = "Voting Phase Active"
+        st.sidebar.markdown("**Status:** 🏆 Voting Ended - Results Available")
     else:
-        phase_label = "Upload Phase Active"
+        st.sidebar.markdown("**Status:** 📸 Active Contest Phase")
     
-    st.sidebar.markdown(f"**Status:** {phase_label}")
+    # Show countdown timer
+    countdown = get_countdown_timer()
+    st.sidebar.markdown(f"**{countdown}**")
     
-    # Only allow phase toggle if voting hasn't ended
-    if not voting_ended:
-        if is_admin:
-            toggle_label = "Enable Voting Phase" if not current_phase else "Disable Voting Phase (Back to Upload)"
-            new_phase = st.sidebar.toggle(toggle_label, value=current_phase, key="phase_toggle")
-            
-            if new_phase != current_phase:
-                set_voting_phase(new_phase)
-                st.sidebar.success(f"Switched to {'Voting' if new_phase else 'Upload'} Phase")
+    # Admin can set upload deadline
+    if is_admin and not voting_ended:
+        st.sidebar.subheader("Set Upload Deadline")
+        current_deadline = get_upload_deadline()
+        
+        if current_deadline:
+            try:
+                deadline_date = datetime.strptime(current_deadline, "%Y-%m-%d").date()
+                st.sidebar.info(f"Current deadline: {deadline_date.strftime('%B %d, %Y')}")
+            except:
+                st.sidebar.info(f"Current deadline: {current_deadline}")
+        
+        new_deadline = st.sidebar.date_input(
+            "Upload Deadline",
+            value=datetime.strptime(current_deadline, "%Y-%m-%d").date() if current_deadline else datetime.now().date(),
+            key="upload_deadline_picker"
+        )
+        
+        if st.sidebar.button("Set Deadline", key="set_deadline_btn", use_container_width=True):
+            deadline_str = new_deadline.strftime("%Y-%m-%d")
+            set_upload_deadline(deadline_str)
+            st.sidebar.success(f"Upload deadline set to {new_deadline.strftime('%B %d, %Y')}")
+            st.rerun()
+        
+        if current_deadline:
+            if st.sidebar.button("Remove Deadline", key="remove_deadline_btn", use_container_width=True):
+                set_upload_deadline(None)
+                st.sidebar.success("Upload deadline removed")
                 st.rerun()
-        else:
-            st.sidebar.info(f"⚠️ Admin access required. Login as '{ADMIN_USERNAME}' to change phase.")
-    else:
-        st.sidebar.info("Voting has ended. Results are now visible.")
-    
-    return current_phase
+    elif not is_admin and not voting_ended:
+        deadline = get_upload_deadline()
+        if deadline:
+            try:
+                deadline_date = datetime.strptime(deadline, "%Y-%m-%d").date()
+                st.sidebar.info(f"⚠️ Admin access required. Login as '{ADMIN_USERNAME}' to set deadline.")
+            except:
+                pass
 
 
 def end_voting_button(employee_id: str) -> None:
     """Display 'End Voting' button only for admin user."""
-    voting_phase = get_voting_phase()
     voting_ended = get_voting_ended()
     
-    # Only show button during voting phase and if voting hasn't ended
-    if voting_phase and not voting_ended:
+    # Show button if voting hasn't ended
+    if not voting_ended:
         st.sidebar.divider()
         st.sidebar.header("Admin Controls")
         
@@ -737,7 +793,7 @@ def end_voting_button(employee_id: str) -> None:
 
 
 def reset_contest_button(employee_id: str) -> None:
-    """Display 'Reset Contest' button for admin to reset back to Upload Phase (for testing)."""
+    """Display 'Reset Contest' button for admin to reset contest (for testing)."""
     voting_ended = get_voting_ended()
     is_admin = employee_id.upper() == ADMIN_USERNAME.upper()
     
@@ -745,12 +801,11 @@ def reset_contest_button(employee_id: str) -> None:
     if voting_ended and is_admin:
         st.sidebar.divider()
         st.sidebar.header("Admin Controls")
-        if st.sidebar.button("🔄 Reset Contest (Back to Upload Phase)", type="secondary", use_container_width=True):
+        if st.sidebar.button("🔄 Reset Contest (Back to Active Phase)", type="secondary", use_container_width=True):
             config = get_config()
-            config["voting_phase_enabled"] = False
             config["voting_ended"] = False
             save_config(config)
-            st.sidebar.success("Contest reset! Back to Upload Phase.")
+            st.sidebar.success("Contest reset! Back to Active Contest Phase.")
             st.rerun()
 
 
@@ -878,8 +933,23 @@ def moderation_section(employee_id: str) -> None:
 
 
 def upload_section(employee_id: str) -> None:
-    """Upload section - only shown during Upload Phase."""
+    """Upload section - shown during Active Contest Phase, disabled after upload deadline."""
     st.markdown('<div class="section-title">Upload a Photo</div>', unsafe_allow_html=True)
+    
+    # Check if upload deadline has passed
+    deadline_passed = is_upload_deadline_passed()
+    countdown = get_countdown_timer()
+    
+    if deadline_passed:
+        deadline = get_upload_deadline()
+        try:
+            deadline_date = datetime.strptime(deadline, "%Y-%m-%d").date()
+            deadline_str = deadline_date.strftime("%B %d, %Y")
+        except:
+            deadline_str = deadline if deadline else "the deadline"
+        
+        st.warning(f"⚠️ **Upload deadline has passed** ({deadline_str}). Uploading is now closed. You can still vote for photos!")
+        return
     
     # Show user's own photos with status
     photos_df, _ = load_data()
@@ -931,6 +1001,9 @@ def upload_section(employee_id: str) -> None:
         return
     
     st.markdown(f'<div class="section-note">JPG or PNG, title required. You can upload {remaining} more photo(s). ({photo_count}/{MAX_PHOTOS_PER_USER} uploaded)</div>', unsafe_allow_html=True)
+    
+    # Show countdown timer
+    st.info(f"📅 **{countdown}**")
     
     # Use user-specific keys to prevent cross-user state persistence
     title_key = f"title_input_{employee_id}"
@@ -1328,8 +1401,8 @@ def main() -> None:
         else:
             st.sidebar.caption("Add credentials in Streamlit Secrets")
     
-    # Get current phase from toggle (admin only)
-    voting_phase = phase_toggle(employee_id if is_admin else "")
+    # Set upload deadline (admin only)
+    upload_deadline_setter(employee_id if is_admin else "")
     
     # Show admin controls (End Voting button and Reset Contest button)
     if is_admin:
@@ -1343,26 +1416,37 @@ def main() -> None:
         moderation_section(employee_id)
         st.divider()
 
-    # Show appropriate sections based on phase
+    # Show appropriate sections based on phase (2-phase system)
     if voting_ended:
-        # Voting has ended: Show final results with uploader names
+        # Phase 2: Results Phase - Voting has ended, show final results
         st.success("🏆 **Voting Has Ended** - Final results are now available!")
         st.divider()
         leaderboard_section(show_uploader=True)
-    elif voting_phase:
-        # Voting Phase: Show voting, hide leaderboard (results hidden during voting)
-        st.info("📊 **Voting Phase Active** - Uploading is disabled. You can now vote for your favorite photos. Results are hidden until voting ends.")
-        st.divider()
-        rating_section(employee_id)
-        # Leaderboard is HIDDEN during voting to prevent influence
     else:
-        # Upload Phase: Show upload and gallery, hide voting and leaderboard
-        st.info("📤 **Upload Phase Active** - Upload your photos. Voting will begin after the admin enables voting phase.")
+        # Phase 1: Active Contest Phase - Upload + Voting both enabled
+        deadline_passed = is_upload_deadline_passed()
+        countdown = get_countdown_timer()
+        
+        if deadline_passed:
+            st.info("📊 **Active Contest Phase** - Upload deadline has passed. You can vote for your favorite photos. Results are hidden until voting ends.")
+        else:
+            st.info("📸 **Active Contest Phase** - Upload your photos and vote for your favorites. Results are hidden until voting ends.")
+            st.caption(f"📅 {countdown}")
+        
         st.divider()
+        
+        # Show upload section (disabled if deadline passed)
         upload_section(employee_id)
         st.divider()
+        
+        # Show gallery
         gallery_section(employee_id)
-        # Leaderboard is HIDDEN during upload phase
+        st.divider()
+        
+        # Show voting section
+        rating_section(employee_id)
+        
+        # Leaderboard is HIDDEN during active phase to prevent influence
 
 
 if __name__ == "__main__":
