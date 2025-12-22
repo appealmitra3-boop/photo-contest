@@ -53,19 +53,30 @@ def inject_css() -> None:
               var(--bg);
 }
 .block-container {
-  padding-top: 1.5rem;
+  padding-top: 0.5rem;
   max-width: 1080px;
   margin: 0 auto;
 }
 /* Hide empty containers that might appear at top */
 .block-container > div:first-child:empty,
+.block-container > div:empty:first-of-type,
 div[data-testid]:empty,
-div:has(background: linear-gradient):empty {
+div:has(background: linear-gradient):empty,
+.element-container:empty,
+.stMarkdown:empty {
   display: none !important;
   height: 0 !important;
   margin: 0 !important;
   padding: 0 !important;
   visibility: hidden !important;
+}
+/* Hide empty rows/containers at the very top */
+.block-container > div:first-child:has(> div:empty),
+.block-container > div:first-child:not(:has(*)) {
+  display: none !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
 }
 .section-title {
   margin-top: 1.5rem;
