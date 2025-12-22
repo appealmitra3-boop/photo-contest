@@ -1066,33 +1066,36 @@ def upload_section(employee_id: str) -> None:
         st.rerun()
 
 
-def gallery_section(employee_id: str = "") -> None:
-    """Show gallery of uploaded photos (without uploader names) during Upload Phase. Only shows approved photos."""
+def rejected_photos_section(employee_id: str) -> None:
+    """Show rejected photos - visible only to uploader and admin."""
     photos_df, _ = load_data()
     is_admin = employee_id.upper() == ADMIN_USERNAME.upper() if employee_id else False
     
-    # Filter to show only approved photos to all users (including admin for voting consistency)
-    # Admin can see all photos in moderation section, but gallery shows only approved for voting
+    # Filter rejected photos
     photos_df["status"] = photos_df["status"].fillna("approved")
-    display_df = photos_df[photos_df["status"].astype(str).str.lower() == "approved"].copy()
-    
-    if display_df.empty:
-        if is_admin:
-            st.info("No photos uploaded yet.")
-        else:
-            st.info("No approved photos available yet.")
-        return
-    
-    st.markdown('<div class="section-title">Uploaded Photos</div>', unsafe_allow_html=True)
     if is_admin:
-        st.markdown('<div class="section-note">All approved entries (pending/rejected photos are in Moderation section above). Admin: Delete buttons are available below each photo.</div>', unsafe_allow_html=True)
+        # Admin sees all rejected photos
+        rejected_df = photos_df[photos_df["status"].astype(str).str.lower() == "rejected"].copy()
     else:
-        st.markdown('<div class="section-note">All approved entries (uploader names hidden for anonymity).</div>', unsafe_allow_html=True)
+        # Regular users see only their own rejected photos
+        rejected_df = photos_df[
+            (photos_df["status"].astype(str).str.lower() == "rejected") &
+            (photos_df["uploader"].astype(str).str.upper() == employee_id.upper())
+        ].copy()
+    
+    if rejected_df.empty:
+        return  # Don't show section if no rejected photos
+    
+    st.markdown('<div class="section-title">Rejected Photos</div>', unsafe_allow_html=True)
+    if is_admin:
+        st.markdown('<div class="section-note">All rejected photos. Admin: You can approve these photos if needed.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="section-note">Your rejected photos. These are not visible to other users.</div>', unsafe_allow_html=True)
     
     # Display in a simple grid (3 columns per row)
     cols_per_row = 3
     photo_rows = [
-        display_df.iloc[i : i + cols_per_row] for i in range(0, len(display_df), cols_per_row)
+        rejected_df.iloc[i : i + cols_per_row] for i in range(0, len(rejected_df), cols_per_row)
     ]
     
     for row_df in photo_rows:
@@ -1101,7 +1104,7 @@ def gallery_section(employee_id: str = "") -> None:
             photo_id = row["photo_id"]
             
             with col:
-                st.markdown('<div class="photo-card">', unsafe_allow_html=True)
+                st.markdown('<div class="photo-card" style="border: 2px solid #ef4444; opacity: 0.8;">', unsafe_allow_html=True)
                 photo_image = get_photo_image(row)
                 if photo_image:
                     st.image(photo_image, caption=None)
@@ -1109,10 +1112,22 @@ def gallery_section(employee_id: str = "") -> None:
                     st.warning("Image file missing.")
                 st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
                 st.caption(f"Theme: {row.get('theme', 'Unspecified')}")
+                st.markdown('<div style="color: #ef4444; font-weight: bold; margin: 0.5rem 0;">❌ Rejected</div>', unsafe_allow_html=True)
+                
+                rejection_reason = row.get("rejection_reason", "")
+                if rejection_reason:
+                    st.caption(f"Reason: {rejection_reason}")
+                
+                # Admin can approve rejected photos
+                if is_admin:
+                    if st.button("✅ Approve", key=f"approve-rejected-gallery-{photo_id}", use_container_width=True):
+                        approve_photo(photo_id)
+                        st.success(f"Photo '{row['title']}' approved!")
+                        st.rerun()
                 
                 # Show delete button for admin
                 if is_admin:
-                    if st.button("🗑️ Delete", key=f"delete-{photo_id}", use_container_width=True):
+                    if st.button("🗑️ Delete", key=f"delete-rejected-{photo_id}", use_container_width=True):
                         delete_photo(photo_id)
                         st.success(f"Photo '{row['title']}' deleted successfully.")
                         st.rerun()
@@ -1121,8 +1136,8 @@ def gallery_section(employee_id: str = "") -> None:
 
 
 def rating_section(employee_id: str) -> None:
-    """Voting section - only shown during Voting Phase, with anonymity. Only shows approved photos."""
-    st.markdown('<div class="section-title">Vote for Photos</div>', unsafe_allow_html=True)
+    """Voting section - shows approved photos with voting buttons."""
+    st.markdown('<div class="section-title">Approved Photos - Vote Here</div>', unsafe_allow_html=True)
     photos_df, ratings_df = load_data()
     is_admin = employee_id.upper() == ADMIN_USERNAME.upper()
 
@@ -1443,11 +1458,13 @@ def main() -> None:
         upload_section(employee_id)
         st.divider()
         
-        # Show gallery
-        gallery_section(employee_id)
+        # Show rejected photos section (if any)
+        rejected_photos_section(employee_id)
+        
+        # Show divider before voting section
         st.divider()
         
-        # Show voting section
+        # Show voting section (approved photos with voting buttons)
         rating_section(employee_id)
         
         # Leaderboard is HIDDEN during active phase to prevent influence
