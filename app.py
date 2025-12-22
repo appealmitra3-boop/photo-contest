@@ -53,30 +53,42 @@ def inject_css() -> None:
               var(--bg);
 }
 .block-container {
-  padding-top: 0.5rem;
+  padding-top: 1rem;
   max-width: 1080px;
   margin: 0 auto;
 }
-/* Hide empty containers that might appear at top */
-.block-container > div:first-child:empty,
-.block-container > div:empty:first-of-type,
-div[data-testid]:empty,
-div:has(background: linear-gradient):empty,
-.element-container:empty,
-.stMarkdown:empty {
+/* Main page title styling */
+.main-page-title {
+  text-align: center;
+  margin: 1rem 0 1.5rem 0;
+  padding: 1.5rem 0;
+  border-bottom: 3px solid #4f46e5;
+}
+.main-page-title h1 {
+  font-size: 2.5rem;
+  font-weight: 800;
+  color: #0f172a;
+  margin: 0;
+  padding: 0;
+}
+.main-page-title h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #475569;
+  margin: 0.5rem 0 0 0;
+  padding: 0;
+}
+/* Hide empty containers that might appear at top - but NOT ones with content */
+.block-container > div:first-child:empty:not(:has(.main-page-title)),
+.block-container > div:empty:first-of-type:not(:has(.main-page-title)),
+div[data-testid]:empty:not(:has(.main-page-title)),
+.element-container:empty:not(:has(.main-page-title)),
+.stMarkdown:empty:not(:has(.main-page-title)) {
   display: none !important;
   height: 0 !important;
   margin: 0 !important;
   padding: 0 !important;
   visibility: hidden !important;
-}
-/* Hide empty rows/containers at the very top */
-.block-container > div:first-child:has(> div:empty),
-.block-container > div:first-child:not(:has(*)) {
-  display: none !important;
-  height: 0 !important;
-  margin: 0 !important;
-  padding: 0 !important;
 }
 .section-title {
   margin-top: 1.5rem;
@@ -996,6 +1008,14 @@ def main() -> None:
         else:
             st.sidebar.caption("Add credentials in Streamlit Secrets")
 
+    # Display main page title (on all pages after login)
+    st.markdown("""
+    <div class="main-page-title">
+        <h1>Income Tax Photography League</h1>
+        <h2>In-House Photo Contest</h2>
+    </div>
+    """, unsafe_allow_html=True)
+    
     # Get current phase from toggle (admin only)
     voting_phase = phase_toggle(employee_id if is_admin else "")
     
