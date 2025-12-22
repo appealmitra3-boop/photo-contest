@@ -1071,12 +1071,10 @@ def gallery_section(employee_id: str = "") -> None:
     photos_df, _ = load_data()
     is_admin = employee_id.upper() == ADMIN_USERNAME.upper() if employee_id else False
     
-    # Filter to show only approved photos to regular users, all photos to admin
-    if is_admin:
-        display_df = photos_df.copy()
-    else:
-        photos_df["status"] = photos_df["status"].fillna("approved")
-        display_df = photos_df[photos_df["status"].astype(str).str.lower() == "approved"].copy()
+    # Filter to show only approved photos to all users (including admin for voting consistency)
+    # Admin can see all photos in moderation section, but gallery shows only approved for voting
+    photos_df["status"] = photos_df["status"].fillna("approved")
+    display_df = photos_df[photos_df["status"].astype(str).str.lower() == "approved"].copy()
     
     if display_df.empty:
         if is_admin:
@@ -1087,7 +1085,7 @@ def gallery_section(employee_id: str = "") -> None:
     
     st.markdown('<div class="section-title">Uploaded Photos</div>', unsafe_allow_html=True)
     if is_admin:
-        st.markdown('<div class="section-note">All submitted entries. Admin: Delete buttons are available below each photo.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-note">All approved entries (pending/rejected photos are in Moderation section above). Admin: Delete buttons are available below each photo.</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="section-note">All approved entries (uploader names hidden for anonymity).</div>', unsafe_allow_html=True)
     
@@ -1111,14 +1109,6 @@ def gallery_section(employee_id: str = "") -> None:
                     st.warning("Image file missing.")
                 st.markdown(f'<div class="photo-title">{row["title"]}</div>', unsafe_allow_html=True)
                 st.caption(f"Theme: {row.get('theme', 'Unspecified')}")
-                
-                # Show status badge for admin
-                if is_admin:
-                    status = row.get("status", "approved")
-                    if status == "pending":
-                        st.markdown('<div style="color: #f59e0b; font-weight: bold; margin: 0.5rem 0;">⏳ Pending</div>', unsafe_allow_html=True)
-                    elif status == "rejected":
-                        st.markdown('<div style="color: #ef4444; font-weight: bold; margin: 0.5rem 0;">❌ Rejected</div>', unsafe_allow_html=True)
                 
                 # Show delete button for admin
                 if is_admin:
