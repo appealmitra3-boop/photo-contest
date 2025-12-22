@@ -94,9 +94,30 @@ div[data-testid]:empty:not(:has(.main-page-title)),
   padding: 0 !important;
   visibility: hidden !important;
 }
-/* Hide empty column containers in moderation section */
+/* Hide empty column containers */
 div[data-testid="column"]:empty,
-div[data-testid="column"]:has(> div:empty:only-child) {
+div[data-testid="column"]:has(> div:empty:only-child),
+div[data-testid="column"]:not(:has(*)) {
+  display: none !important;
+  height: 0 !important;
+  width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  visibility: hidden !important;
+}
+/* Hide empty Streamlit containers that appear as boxes */
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:empty:only-child),
+div[data-testid="element-container"]:empty,
+div[data-testid="stVerticalBlock"]:has(> div:empty:only-child),
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:empty) {
+  display: none !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+/* Hide any empty containers with borders that might appear as boxes */
+div[style*="border"]:empty,
+div[class*="photo-card"]:empty {
   display: none !important;
 }
 .section-title {
@@ -751,8 +772,9 @@ def moderation_section(employee_id: str) -> None:
             ]
             
             for row_df in pending_rows:
-                # Use fixed 2 columns to avoid empty containers
-                cols = st.columns(2)
+                # Only create columns for actual photos to avoid empty containers
+                num_photos = len(row_df)
+                cols = st.columns(num_photos)
                 for idx, (col, (_, row)) in enumerate(zip(cols, row_df.iterrows())):
                     photo_id = row["photo_id"]
                     
@@ -789,8 +811,6 @@ def moderation_section(employee_id: str) -> None:
                                 st.rerun()
                         
                         st.markdown("</div>", unsafe_allow_html=True)
-                
-                # Second column will be empty if only one photo - Streamlit handles this automatically
     
     # Show rejected photos (optional - admin can see what was rejected)
     if not rejected_df.empty:
@@ -813,8 +833,9 @@ def moderation_section(employee_id: str) -> None:
                 ]
                 
                 for row_df in rejected_rows:
-                    # Use fixed 2 columns to avoid empty containers
-                    cols = st.columns(2)
+                    # Only create columns for actual photos to avoid empty containers
+                    num_photos = len(row_df)
+                    cols = st.columns(num_photos)
                     for idx, (col, (_, row)) in enumerate(zip(cols, row_df.iterrows())):
                         photo_id = row["photo_id"]
                         
