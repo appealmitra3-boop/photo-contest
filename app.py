@@ -167,6 +167,24 @@ div[class*="photo-card"]:empty {
   width: 100%;
   object-fit: cover;
 }
+/* Style Photo Title input and Theme dropdown with purple borders */
+div[data-testid="stTextInput"] input,
+div[data-testid="stSelectbox"] select {
+  border: 2px solid #4f46e5 !important;
+  border-radius: 8px !important;
+  padding: 0.5rem 0.75rem !important;
+  transition: border-color 0.2s ease !important;
+}
+div[data-testid="stTextInput"] input:focus,
+div[data-testid="stSelectbox"] select:focus {
+  border-color: #7c3aed !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
+}
+div[data-testid="stTextInput"] input:hover,
+div[data-testid="stSelectbox"] select:hover {
+  border-color: #6366f1 !important;
+}
 </style>
 """,
         unsafe_allow_html=True,
