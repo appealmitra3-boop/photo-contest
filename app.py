@@ -974,9 +974,22 @@ def main() -> None:
 
     ensure_structure()
 
+    # Display main page title (on ALL pages - before and after login)
+    st.markdown("""
+    <div class="main-page-title">
+        <h1>Income Tax Photography League</h1>
+        <h2>In-House Photo Contest</h2>
+    </div>
+    """, unsafe_allow_html=True)
+
     user_info = require_user()
     if not user_info:
-        st.warning("Please login to continue.")
+        # Show login message with proper styling to prevent text cutoff
+        st.markdown("""
+        <div style="padding: 1rem; background-color: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px; margin: 1rem 0;">
+            <strong>⚠️ Please login to continue.</strong>
+        </div>
+        """, unsafe_allow_html=True)
         return
     
     employee_id = user_info.get("employee_id", "")
@@ -1007,14 +1020,6 @@ def main() -> None:
             st.sidebar.caption("Cloudinary package not installed")
         else:
             st.sidebar.caption("Add credentials in Streamlit Secrets")
-
-    # Display main page title (on all pages after login)
-    st.markdown("""
-    <div class="main-page-title">
-        <h1>Income Tax Photography League</h1>
-        <h2>In-House Photo Contest</h2>
-    </div>
-    """, unsafe_allow_html=True)
     
     # Get current phase from toggle (admin only)
     voting_phase = phase_toggle(employee_id if is_admin else "")
