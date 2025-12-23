@@ -1029,14 +1029,16 @@ def upload_section(employee_id: str) -> None:
     theme_key = f"theme_select_{employee_id}"
     
     title = st.text_input("Photo Title", key=title_key)
-    theme = st.selectbox("Select Theme", THEMES, index=0, key=theme_key)
+    # Add placeholder option to make theme selection mandatory
+    theme_options = ["-- Select theme of photo --"] + THEMES
+    theme = st.selectbox("Select theme of photo", theme_options, index=0, key=theme_key)
     uploaded_file = st.file_uploader("Select a JPG or PNG image", type=["jpg", "jpeg", "png"], key=uploader_key)
 
     if st.button("Upload", key=f"upload_btn_{employee_id}"):
         if not title.strip():
             st.warning("Title is required.")
             return
-        if not theme:
+        if not theme or theme == "-- Select theme of photo --":
             st.warning("Please select a theme.")
             return
         if not uploaded_file:
